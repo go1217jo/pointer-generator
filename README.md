@@ -1,3 +1,10 @@
+*Note:*
+- This is the **Python3, Tensorflow>=1.5.0** version of [abisee/pointer-generator](https://github.com/abisee/pointer-generator). Resolves [#93](https://github.com/abisee/pointer-generator/issues/93).
+- For Python3, Tensorflow<=1.4.0: use https://github.com/becxer/pointer-generator
+- For Python2, use https://github.com/abisee/pointer-generator
+
+---
+
 This repository contains code for the ACL 2017 paper *[Get To The Point: Summarization with Pointer-Generator Networks](https://arxiv.org/abs/1704.04368)*. 
 
 ## Looking for test set output?
