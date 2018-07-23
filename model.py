@@ -87,8 +87,8 @@ class SummarizationModel(object):
         Each are LSTMStateTuples of shape ([batch_size,hidden_dim],[batch_size,hidden_dim])
     """
     with tf.variable_scope('encoder'):
-      cell_fw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
-      cell_bw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
+      cell_fw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim.value, initializer=self.rand_unif_init, state_is_tuple=True)
+      cell_bw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim.value, initializer=self.rand_unif_init, state_is_tuple=True)
       (encoder_outputs, (fw_st, bw_st)) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, encoder_inputs, dtype=tf.float32, sequence_length=seq_len, swap_memory=True)
       encoder_outputs = tf.concat(axis=2, values=encoder_outputs) # concatenate the forwards and backwards states
     return encoder_outputs, fw_st, bw_st
@@ -104,7 +104,7 @@ class SummarizationModel(object):
     Returns:
       state: LSTMStateTuple with hidden_dim units.
     """
-    hidden_dim = self._hps.hidden_dim
+    hidden_dim = self._hps.hidden_dim.value
     with tf.variable_scope('reduce_final_st'):
 
       # Define weights and biases to reduce the cell and reduce the state
@@ -135,11 +135,11 @@ class SummarizationModel(object):
       coverage: A tensor, the current coverage vector
     """
     hps = self._hps
-    cell = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
+    cell = tf.contrib.rnn.LSTMCell(hps.hidden_dim.value, state_is_tuple=True, initializer=self.rand_unif_init)
 
-    prev_coverage = self.prev_coverage if hps.mode=="decode" and hps.coverage else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
+    prev_coverage = self.prev_coverage if hps.mode.value=="decode" and hps.coverage.value else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
 
-    outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage)
+    outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode.value=="decode"), pointer_gen=hps.pointer_gen.value, use_coverage=hps.coverage.value, prev_coverage=prev_coverage)
 
     return outputs, out_state, attn_dists, p_gens, coverage
 
@@ -288,19 +288,19 @@ class SummarizationModel(object):
   def _add_train_op(self):
     """Sets self._train_op, the op to run for training."""
     # Take gradients of the trainable variables w.r.t. the loss function to minimize
-    loss_to_minimize = self._total_loss if self._hps.coverage else self._loss
+    loss_to_minimize = self._total_loss if self._hps.coverage.value else self._loss
     tvars = tf.trainable_variables()
     gradients = tf.gradients(loss_to_minimize, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
 
     # Clip the gradients
     with tf.device("/gpu:0"):
-      grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm)
+      grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm.value)
 
     # Add a summary
     tf.summary.scalar('global_norm', global_norm)
 
     # Apply adagrad optimizer
-    optimizer = tf.train.AdagradOptimizer(self._hps.lr, initial_accumulator_value=self._hps.adagrad_init_acc)
+    optimizer = tf.train.AdagradOptimizer(self._hps.lr.value, initial_accumulator_value=self._hps.adagrad_init_acc.value)
     with tf.device("/gpu:0"):
       self._train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=self.global_step, name='train_step')
 
@@ -313,7 +313,7 @@ class SummarizationModel(object):
     with tf.device("/gpu:0"):
       self._add_seq2seq()
     self.global_step = tf.Variable(0, name='global_step', trainable=False)
-    if self._hps.mode == 'train':
+    if self._hps.mode.value == 'train':
       self._add_train_op()
     self._summaries = tf.summary.merge_all()
     t1 = time.time()
@@ -328,7 +328,7 @@ class SummarizationModel(object):
         'loss': self._loss,
         'global_step': self.global_step,
     }
-    if self._hps.coverage:
+    if self._hps.coverage.value:
       to_return['coverage_loss'] = self._coverage_loss
     return sess.run(to_return, feed_dict)
 
@@ -340,7 +340,7 @@ class SummarizationModel(object):
         'loss': self._loss,
         'global_step': self.global_step,
     }
-    if self._hps.coverage:
+    if self._hps.coverage.value:
       to_return['coverage_loss'] = self._coverage_loss
     return sess.run(to_return, feed_dict)
 
@@ -413,7 +413,7 @@ class SummarizationModel(object):
       feed[self._max_art_oovs] = batch.max_art_oovs
       to_return['p_gens'] = self.p_gens
 
-    if self._hps.coverage:
+    if self._hps.coverage.value:
       feed[self.prev_coverage] = np.stack(prev_coverage, axis=0)
       to_return['coverage'] = self.coverage
 
