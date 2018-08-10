@@ -31,6 +31,7 @@ FLAGS = tf.app.flags.FLAGS
 
 SECS_UNTIL_NEW_CKPT = 60  # max number of seconds before loading new checkpoint
 
+file_no = 1
 
 class BeamSearchDecoder(object):
   """Beam search decoder."""
@@ -173,6 +174,7 @@ class BeamSearchDecoder(object):
       decoded_words: List of strings; the words of the generated summary.
       p_gens: List of scalars; the p_gen values. If not running in pointer-generator mode, list of None.
     """
+    global file_no
     article_lst = article.split() # list of words
     decoded_lst = decoded_words # list of decoded words
     to_write = {
@@ -183,10 +185,11 @@ class BeamSearchDecoder(object):
     }
     if FLAGS.pointer_gen:
       to_write['p_gens'] = p_gens
-    output_fname = os.path.join(self._decode_dir, 'attn_vis_data.json')
+    output_fname = os.path.join(self._decode_dir, 'attn_vis_data_%04d.json' % file_no)
     with open(output_fname, 'w', encoding='utf-8') as output_file:
       json.dump(to_write, output_file)
     tf.logging.info('Wrote visualization data to %s', output_fname)
+    file_no += 1
 
 
 def print_results(article, abstract, decoded_output):
