@@ -20,7 +20,10 @@ import glob
 import random
 import struct
 import csv
+import tensorflow as tf
 from tensorflow.core.example import example_pb2
+
+FLAGS = tf.app.flags.FLAGS
 
 # <s> and </s> are used in the data files to segment the abstracts into sentences. They don't receive vocab ids.
 SENTENCE_START = '<s>'
@@ -213,8 +216,8 @@ def outputids2words(id_list, vocab, article_oovs):
       article_oov_idx = i - vocab.size()
       try:
         w = article_oovs[article_oov_idx]
-      except ValueError as e: # i doesn't correspond to an article oov
-        raise ValueError('Error: model produced word ID %i which corresponds to article OOV %i but this example only has %i article OOVs' % (i, article_oov_idx, len(article_oovs)))
+      except IndexError as e: # i doesn't correspond to an article oov
+        raise IndexError('Error: model produced word ID %i which corresponds to article OOV %i but this example only has %i article OOVs' % (i, article_oov_idx, len(article_oovs)))
     words.append(w)
   return words
 

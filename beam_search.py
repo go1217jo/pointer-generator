@@ -119,7 +119,7 @@ def run_beam_search(sess, model, vocab, batch):
                         enc_states=enc_states,
                         dec_init_states=states,
                         prev_coverage=prev_coverage)
-
+    
     # Extend each hypothesis and collect them all in all_hyps
     all_hyps = []
     num_orig_hyps = 1 if steps == 0 else len(hyps) # On the first step, we only had one original hypothesis (the initial hypothesis). On subsequent steps, all original hypotheses are distinct.
@@ -158,7 +158,7 @@ def run_beam_search(sess, model, vocab, batch):
   # Sort hypotheses by average log probability
   hyps_sorted = sort_hyps(results)
 
-  # Return the hypothesis with highest average log prob
+  # Return the hypothesis with highest average log probs
   return hyps_sorted[0]
 
 def sort_hyps(hyps):

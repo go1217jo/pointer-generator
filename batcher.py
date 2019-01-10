@@ -60,7 +60,7 @@ class Example(object):
     self.dec_len = len(self.dec_input)
 
     # If using pointer-generator mode, we need to store some extra info
-    if hps.pointer_gen:
+    if hps.pointer_gen.value:
       # Store a version of the enc_input where in-article OOVs are represented by their temporary OOV id; also store the in-article OOVs words themselves
       self.enc_input_extend_vocab, self.article_oovs = data.article2ids(article_words, vocab)
 
@@ -112,7 +112,7 @@ class Example(object):
     """Pad the encoder input sequence with pad_id up to max_len."""
     while len(self.enc_input) < max_len:
       self.enc_input.append(pad_id)
-    if self.hps.pointer_gen:
+    if self.hps.pointer_gen.value:
       while len(self.enc_input_extend_vocab) < max_len:
         self.enc_input_extend_vocab.append(pad_id)
 
@@ -171,7 +171,7 @@ class Batch(object):
         self.enc_padding_mask[i][j] = 1
 
     # For pointer-generator mode, need to store some extra info
-    if hps.pointer_gen:
+    if hps.pointer_gen.value:
       # Determine the max number of in-article OOVs in this batch
       self.max_art_oovs = max([len(ex.article_oovs) for ex in example_list])
       # Store the in-article OOVs themselves
@@ -313,7 +313,7 @@ class Batcher(object):
     In decode mode, makes batches that each contain a single example repeated.
     """
     while True:
-      if self._hps.mode != 'decode':
+      if self._hps.mode.value != 'decode':
         # Get bucketing_cache_size-many batches of Examples into a list, then sort
         inputs = []
         for _ in range(self._hps.batch_size.value * self._bucketing_cache_size):
