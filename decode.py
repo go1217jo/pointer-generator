@@ -79,6 +79,7 @@ class BeamSearchDecoder(object):
     """Decode examples until data is exhausted (if FLAGS.single_pass) and return, or decode indefinitely, loading latest checkpoint at regular intervals"""
     t0 = time.time()
     counter = 0
+    decoded_outputs = []
     while True:
       batch = self._batcher.next_batch()  # 1 example repeated across batch
       if batch is None: # finished decoding dataset in single_pass mode
@@ -87,7 +88,7 @@ class BeamSearchDecoder(object):
         tf.logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
         results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
         rouge_log(results_dict, self._decode_dir)
-        return
+        return decoded_outputs
 
       original_article = batch.original_articles[0]  # string
       original_abstract = batch.original_abstracts[0]  # string
@@ -109,13 +110,18 @@ class BeamSearchDecoder(object):
         decoded_words = decoded_words[:fst_stop_idx]
       except ValueError:
         decoded_words = decoded_words
-      decoded_output = ' '.join(decoded_words) # single string
+      
+      decoded_output = ' '.join(decoded_words)
+      decoded_outputs.append(decoded_output) # single string
+
+      if len(decoded_outputs) == 10:
+        return decoded_outputs
 
       if FLAGS.single_pass:
         self.write_for_rouge(original_abstract_sents, decoded_words, counter) # write ref summary and decoded summary to file, to eval with pyrouge later
         counter += 1 # this is how many examples we've decoded
       else:
-        print_results(article_withunks, abstract_withunks, decoded_output) # log output to screen
+        #print_results(article_withunks, abstract_withunks, decoded_output) # log output to screen
         self.write_for_attnvis(article_withunks, abstract_withunks, decoded_words, best_hyp.attn_dists, best_hyp.p_gens) # write info to .json file for visualization tool
 
         # Check if SECS_UNTIL_NEW_CKPT has elapsed; if so return so we can load a new checkpoint

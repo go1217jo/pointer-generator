@@ -77,17 +77,19 @@ class Example(object):
 
 
   def get_dec_inp_targ_seqs(self, sequence, max_len, start_id, stop_id):
-    """Given the reference summary as a sequence of tokens, return the input sequence for the decoder, and the target sequence which we will use to calculate loss. The sequence will be truncated if it is longer than max_len. The input sequence must start with the start_id and the target sequence must end with the stop_id (but not if it's been truncated).
+    """Given the reference summary as a sequence of tokens, return the input sequence for the decoder,
+     and the target sequence which we will use to calculate loss. The sequence will be truncated if it is longer than max_len.
+      The input sequence must start with the start_id and the target sequence must end with the stop_id (but not if it's been truncated).
 
     Args:
-      sequence: List of ids (integers)
+      sequence: List of ids (integers) [reference summary의 token의 sequence 번호]
       max_len: integer
       start_id: integer
       stop_id: integer
 
     Returns:
       inp: sequence length <=max_len starting with start_id
-      target: sequence same length as input, ending with stop_id only if there was no truncation
+     target: sequence same length as input, ending with stop_id only if there was no truncation
     """
     inp = [start_id] + sequence[:]
     target = sequence[:]

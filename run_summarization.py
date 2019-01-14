@@ -24,10 +24,15 @@ import numpy as np
 from collections import namedtuple
 from data import Vocab
 from batcher import Batcher
+import bert
 from model import SummarizationModel
 from decode import BeamSearchDecoder
 import util
+import tokenization
 from tensorflow.python import debug as tf_debug
+import copy
+import math
+import random
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -71,6 +76,23 @@ tf.app.flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model
 
 # Debugging. See https://www.tensorflow.org/programmers_guide/debugger
 tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
+
+# For Bert
+tf.app.flags.DEFINE_integer("max_predictions_per_seq", 20,
+"In this task, it also refers to maximum number of masked tokens per word.")
+
+tf.app.flags.DEFINE_string('bert_vocab_path', None, "The vocabulary file that the BERT model was trained on.")
+
+tf.app.flags.DEFINE_string(
+    "bert_config_file", None,
+    "The config json file corresponding to the pre-trained BERT model. "
+    "This specifies the model architecture.")
+
+tf.app.flags.DEFINE_integer(
+    "max_seq_length", 128,
+    "The maximum total input sequence length after WordPiece tokenization. "
+    "Sequences longer than this will be truncated, and sequences shorter "
+    "than this will be padded.")
 
 
 
@@ -263,6 +285,166 @@ def run_eval(model, batcher, vocab):
     if train_step % 100 == 0:
       summary_writer.flush()
 
+def is_subtoken(x):
+  return x.startswith("##")
+
+def process_prediction_input(input_tokens, input_ids, input_mask, segment_ids, MASKED_ID, max_predictions_per_seq):
+  features = []
+  new_input_ids = copy.deepcopy(input_ids)
+  masked_lm_labels = []
+  masked_lm_positions = []
+  mask_count = 0
+
+  num_prediction = math.ceil(0.15*(len(input_tokens)-2))
+
+  while(mask_count <= num_prediction):
+    mask_position = random.randrange(1,len(input_tokens)-1)
+    if mask_position in masked_lm_positions:
+      continue
+
+    mask_required = 1
+    while is_subtoken(input_tokens[mask_position + mask_required]):
+      mask_required += 1
+
+    if is_subtoken(input_tokens[mask_position]):
+      num_left_mask = 1
+      while is_subtoken(input_tokens[mask_position - (num_left_mask)]):
+        num_left_mask +=1
+      mask_position -= num_left_mask
+      mask_required += num_left_mask
+
+    if (mask_count + mask_required) > num_prediction:
+      break
+    new_mask_positions = list(range(mask_position, mask_position + mask_required))
+    for pos in new_mask_positions:
+      new_input_ids[pos] = MASKED_ID
+      masked_lm_labels.append(input_ids[pos])
+    masked_lm_positions.extend(new_mask_positions)
+    mask_count += mask_required
+
+  while len(masked_lm_positions) < max_predictions_per_seq:
+    masked_lm_positions.append(0)
+    masked_lm_labels.append(0)
+
+  feature = InputFeatures(
+    input_ids = new_input_ids,
+    input_mask = input_mask,
+    segment_ids = segment_ids,
+    masked_lm_positions = masked_lm_positions,
+    masked_lm_ids = masked_lm_labels)
+  
+  return feature
+  
+# Use for bert
+class InputFeatures(object):
+  """A single set of features of data."""
+
+  def __init__(self, input_ids, segment_ids, input_mask, masked_lm_positions,
+               masked_lm_ids):
+    self.input_ids = input_ids,
+    self.segment_ids = segment_ids,
+    self.input_mask = input_mask,
+    self.masked_lm_positions = masked_lm_positions,
+    self.masked_lm_ids = masked_lm_ids,
+
+
+def convert_single_decoded(index, decoded, max_seq_length):
+  """Converts a single `InputExample` into a single `InputFeatures`."""
+  tokenizer = tokenization.FullTokenizer(
+    vocab_file=FLAGS.bert_vocab_path, do_lower_case=False)
+
+  MASKED_ID = tokenizer.convert_tokens_to_ids(["[MASK]"])[0]
+  
+  tokens = tokenizer.tokenize(decoded)
+  print("example: ", decoded)
+  print("tokens: ", tokens)
+  # Account for [CLS] and [SEP] with "- 2"
+  if len(tokens) > max_seq_length - 2:
+    tokens = tokens[0:(max_seq_length - 2)]
+
+  input_tokens = []
+  segment_ids = []
+  input_tokens.append("[CLS]")
+  segment_ids.append(0)
+  for token in tokens:
+    input_tokens.append(token)
+    segment_ids.append(0)
+  input_tokens.append("[SEP]")
+  segment_ids.append(0)
+
+  input_ids = tokenizer.convert_tokens_to_ids(input_tokens)
+
+  # The mask has 1 for real tokens and 0 for padding tokens. Only real
+  # tokens are attended to.
+  input_mask = [1] * len(input_ids)
+
+  # Zero-pad up to the sequence length.
+  while len(input_ids) < max_seq_length:
+    input_ids.append(0)
+    input_mask.append(0)
+    segment_ids.append(0)
+
+  assert len(input_ids) == max_seq_length
+  assert len(input_mask) == max_seq_length
+  assert len(segment_ids) == max_seq_length
+
+  if index < 5:
+    tf.logging.info("*** Example ***")
+    tf.logging.info("id: %s" % (index))
+    tf.logging.info("tokens: %s" % " ".join(
+        [tokenization.printable_text(x) for x in input_tokens]))
+    tf.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+    tf.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+    tf.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+
+  # features = create_sequential_mask(input_tokens, input_ids, input_mask, segment_ids,
+  #                                   FLAGS.max_predictions_per_seq)
+  ##### changed #####
+  feature = process_prediction_input(input_tokens, input_ids, input_mask, segment_ids, MASKED_ID, FLAGS.max_predictions_per_seq)
+  
+  return feature, input_tokens
+
+# This function is not used by this file but is still used by the Colab and
+# people who depend on it.
+def convert_decoded_to_features(decoded_ouputs, max_seq_length):
+  """Convert a set of `InputExample`s to a list of `InputFeatures`."""
+
+  all_features = {}
+  all_tokens = []
+
+  all_input_ids = []
+  all_input_mask = []
+  all_segment_ids = []
+  all_masked_lm_positions = []
+  all_masked_lm_ids = []
+
+  for (index, decoded) in enumerate(decoded_ouputs):
+    if index % 10000 == 0:
+      tf.logging.info("Writing example %d of %d" % (index, len(decoded_ouputs)))
+
+    features, tokens = convert_single_decoded(index, decoded,
+                                     max_seq_length)
+    """
+    all_features.append(features)
+    """
+    all_tokens.extend(tokens)
+
+    all_input_ids.append(features.input_ids)
+    all_input_mask.append(features.input_mask)
+    all_segment_ids.append(features.segment_ids)
+    all_masked_lm_positions.append(features.masked_lm_positions)
+    all_masked_lm_ids.append(features.masked_lm_ids)
+  
+  length = len(all_input_ids)
+
+  all_features["input_ids"] = tf.reshape(tf.constant(all_input_ids, name="input_ids"), shape=[length, -1])
+  all_features["input_mask"] = tf.reshape(tf.constant(all_input_mask, name="input_mask"), shape=[length, -1])
+  all_features["segment_ids"] = tf.reshape(tf.constant(all_segment_ids, name="segment_ids"), shape=[length, -1])
+  all_features["masked_lm_positions"] = tf.reshape(tf.constant(all_masked_lm_positions, name="masked_lm_positions"), shape=[length, -1])
+  all_features["masked_lm_ids"] = tf.reshape(tf.constant(all_masked_lm_ids, name="masked_lm_ids"), shape=[length, -1])
+
+  return all_features, all_tokens
+
 
 def main(unused_argv):
   if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
@@ -308,6 +490,7 @@ def main(unused_argv):
     print("creating model...")
     model = SummarizationModel(hps, vocab)
     setup_training(model, batcher)
+
   elif hps.mode.value == 'eval':
     model = SummarizationModel(hps, vocab)
     run_eval(model, batcher, vocab)
@@ -316,7 +499,29 @@ def main(unused_argv):
     decode_model_hps = hps._replace(max_dec_steps=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
     model = SummarizationModel(decode_model_hps, vocab)
     decoder = BeamSearchDecoder(model, batcher, vocab)
-    decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
+    decoded_ouputs = decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
+
+    # Bert
+    tf.logging.info("Bert started")
+    bert_config = bert.BertConfig.from_json_file(FLAGS.bert_config_file)
+    if FLAGS.max_seq_length > bert_config.max_position_embeddings:
+      raise ValueError(
+          "Cannot use sequence length %d because the BERT model "
+          "was only trained up to sequence length %d" %
+          (FLAGS.max_seq_length, bert_config.max_position_embeddings))
+    
+    features, all_tokens = convert_decoded_to_features(decoded_ouputs, FLAGS.max_seq_length)
+
+    bertModel = bert.BertModel(
+      config = bert_config,
+      is_training = False,
+      input_ids = features["input_ids"],
+      input_mask= features["input_mask"],
+      token_type_ids=features["segment_ids"],
+      use_one_hot_embeddings= False
+    )
+    tf.logging.info("Complete Bert model build")
+
   else:
     raise ValueError("The 'mode' flag must be one of train/eval/decode")
 
