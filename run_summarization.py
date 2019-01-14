@@ -94,6 +94,14 @@ tf.app.flags.DEFINE_integer(
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
 
+tf.app.flags.DEFINE_string(
+    "init_checkpoint", None,
+    "Initial checkpoint (usually from a pre-trained BERT model).")
+
+tf.app.flags.DEFINE_bool(
+    "do_lower_case", True,
+    "Whether to lower case the input text. Should be True for uncased "
+    "models and False for cased models.")
 
 
 def calc_running_avg_loss(loss, running_avg_loss, summary_writer, step, decay=0.99):
@@ -351,7 +359,7 @@ class InputFeatures(object):
 def convert_single_decoded(index, decoded, max_seq_length):
   """Converts a single `InputExample` into a single `InputFeatures`."""
   tokenizer = tokenization.FullTokenizer(
-    vocab_file=FLAGS.bert_vocab_path, do_lower_case=False)
+    vocab_file=FLAGS.bert_vocab_path, do_lower_case=FLAGS.do_lower_case)
 
   MASKED_ID = tokenizer.convert_tokens_to_ids(["[MASK]"])[0]
   
@@ -388,6 +396,7 @@ def convert_single_decoded(index, decoded, max_seq_length):
   assert len(input_mask) == max_seq_length
   assert len(segment_ids) == max_seq_length
 
+  """
   if index < 5:
     tf.logging.info("*** Example ***")
     tf.logging.info("id: %s" % (index))
@@ -396,6 +405,7 @@ def convert_single_decoded(index, decoded, max_seq_length):
     tf.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
     tf.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
     tf.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+  """
 
   # features = create_sequential_mask(input_tokens, input_ids, input_mask, segment_ids,
   #                                   FLAGS.max_predictions_per_seq)
@@ -437,13 +447,160 @@ def convert_decoded_to_features(decoded_ouputs, max_seq_length):
   
   length = len(all_input_ids)
 
-  all_features["input_ids"] = tf.reshape(tf.constant(all_input_ids, name="input_ids"), shape=[length, -1])
-  all_features["input_mask"] = tf.reshape(tf.constant(all_input_mask, name="input_mask"), shape=[length, -1])
-  all_features["segment_ids"] = tf.reshape(tf.constant(all_segment_ids, name="segment_ids"), shape=[length, -1])
-  all_features["masked_lm_positions"] = tf.reshape(tf.constant(all_masked_lm_positions, name="masked_lm_positions"), shape=[length, -1])
-  all_features["masked_lm_ids"] = tf.reshape(tf.constant(all_masked_lm_ids, name="masked_lm_ids"), shape=[length, -1])
+  all_features["input_ids"] = np.array(all_input_ids).reshape(length, -1)
+  all_features["input_mask"] = np.array(all_input_mask).reshape(length, -1)
+  all_features["segment_ids"] = np.array(all_segment_ids).reshape(length, -1)
+  all_features["masked_lm_positions"] = np.array(all_masked_lm_positions).reshape(length, -1)
+  all_features["masked_lm_ids"] = np.array(all_masked_lm_ids).reshape(length, -1)
 
   return all_features, all_tokens
+
+
+def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
+                         label_ids):
+  """Get loss and log probs for the masked LM."""
+  input_tensor = gather_indexes(input_tensor, positions)
+
+  with tf.variable_scope("cls/predictions"):
+    # We apply one more non-linear transformation before the output layer.
+    # This matrix is not used after pre-training.
+    with tf.variable_scope("transform"):
+      input_tensor = tf.layers.dense(
+          input_tensor,
+          units=bert_config.hidden_size,
+          activation=bert.get_activation(bert_config.hidden_act),
+          kernel_initializer=bert.create_initializer(
+              bert_config.initializer_range))
+      input_tensor = bert.layer_norm(input_tensor)
+
+    # The output weights are the same as the input embeddings, but there is
+    # an output-only bias for each token.
+    output_bias = tf.get_variable(
+        "output_bias",
+        shape=[bert_config.vocab_size],
+        initializer=tf.zeros_initializer())
+    logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
+    logits = tf.nn.bias_add(logits, output_bias)
+    log_probs = tf.nn.log_softmax(logits, axis=-1)
+
+    label_ids = tf.reshape(label_ids, [-1])
+
+    one_hot_labels = tf.one_hot(
+        label_ids, depth=bert_config.vocab_size, dtype=tf.float32)
+    per_example_loss = -tf.reduce_sum(log_probs * one_hot_labels, axis=[-1])
+    loss = tf.reshape(per_example_loss, [-1, tf.shape(positions)[1]])
+    # TODO: dynamic gather from per_example_loss
+  # return loss
+  return per_example_loss, log_probs
+
+
+def gather_indexes(sequence_tensor, positions):
+  """Gathers the vectors at the specific positions over a minibatch."""
+  sequence_shape = bert.get_shape_list(sequence_tensor, expected_rank=3)
+  batch_size = sequence_shape[0]
+  seq_length = sequence_shape[1]
+  width = sequence_shape[2]
+
+  flat_offsets = tf.reshape(
+      tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])
+  flat_positions = tf.reshape(positions + flat_offsets, [-1])
+  flat_sequence_tensor = tf.reshape(sequence_tensor,
+                                    [batch_size * seq_length, width])
+  output_tensor = tf.gather(flat_sequence_tensor, flat_positions)
+  return output_tensor
+
+
+def bert_model_process(bert_config, features, init_checkpoint, use_tpu=False):
+  # Create Bert model
+  bertModel = bert.BertModel(
+      config = bert_config,
+      is_training = False,
+      input_ids = tf.constant(features["input_ids"], name="input_ids"),
+      input_mask= tf.constant(features["input_mask"], name="input_mask"),
+      token_type_ids= tf.constant(features["segment_ids"], name="segment_ids"),
+      use_one_hot_embeddings= False
+    )
+
+  tf.logging.info("Complete Bert model build")
+
+  (masked_lm_example_loss, masked_lm_log_probs) = get_masked_lm_output(
+      bert_config, bertModel.get_sequence_output(), bertModel.get_embedding_table(),
+      tf.constant(features["masked_lm_positions"], name="masked_lm_positions"),
+      tf.constant(features["masked_lm_ids"], name="masked_lm_ids"))
+
+  tvars = tf.trainable_variables()
+  initialized_variable_names = {}
+  scaffold_fn = None
+  if init_checkpoint:
+    (assignment_map, initialized_variable_names) = bert.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
+    if use_tpu:
+      def tpu_scaffold():
+        tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+        return tf.train.Scaffold()
+
+      scaffold_fn = tpu_scaffold
+    else:
+      tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+
+  masked_lm_log_probs = tf.reshape(masked_lm_log_probs, [-1, masked_lm_log_probs.shape[-1]])
+  masked_lm_predictions = tf.argmax(masked_lm_log_probs, axis=-1, output_type=tf.int32)
+  output = {"masked_lm_log_probs": masked_lm_log_probs,
+      "masked_lm_predictions": masked_lm_predictions
+    }
+  
+  sess = tf.Session(config=util.get_config())
+  print("Initializing all variables...")
+  sess.run(tf.global_variables_initializer())
+  return sess.run(output)
+  
+
+def parse_result(result, all_tokens, features, output_file=None):
+  tokenizer = tokenization.FullTokenizer(vocab_file=FLAGS.bert_vocab_path, do_lower_case=FLAGS.do_lower_case)
+  predict_ids = result['masked_lm_predictions']
+
+  predict_words = []
+  for idx in range(int(len(predict_ids)/20)):
+    words_per_example = tokenizer.convert_ids_to_tokens(predict_ids[20*idx:20*(idx+1)])
+    predict_words.append(words_per_example)
+
+  idx = 0
+  for i in range(len(features["input_ids"])):
+    origin_sent = []
+    while(all_tokens[idx] != "[SEP]"):
+      if(all_tokens[idx] == "[CLS]"):
+        idx += 1
+      else:
+        origin_sent.append(all_tokens[idx])
+        idx += 1
+    idx += 1
+
+    masked_lm_positions = features["masked_lm_positions"][i]
+    num_prediction = np.count_nonzero(masked_lm_positions)
+    predict_sent = origin_sent.copy()
+    for j in range(num_prediction):
+      predict_sent[masked_lm_positions[j]-1] = "<" + predict_words[i][j] + ">"
+    
+    predict = predict_sent.copy()
+    l = 0
+
+    for k, word in enumerate(predict_sent):
+      if(word.startswith("##")):
+        try:
+          if(k >= 1):
+            predict[l-1] = predict[l-1] + word[2:]
+            predict = predict[:l] + predict[l+1:]
+            l-=1
+        except Exception as e:
+          print(e)
+          print('predict_sent')
+          print(predict_sent)
+          print('length: %d k: %d' % (len(predict_sent), k))
+      l+=1
+
+    print("origin__sent: ", ' '.join(origin_sent))
+    print("predict_sent: ", ' '.join(predict_sent))
+    print("predict     : ", ' '.join(predict))
+    print()
 
 
 def main(unused_argv):
@@ -511,16 +668,9 @@ def main(unused_argv):
           (FLAGS.max_seq_length, bert_config.max_position_embeddings))
     
     features, all_tokens = convert_decoded_to_features(decoded_ouputs, FLAGS.max_seq_length)
+    result = bert_model_process(bert_config, features, FLAGS.init_checkpoint)
 
-    bertModel = bert.BertModel(
-      config = bert_config,
-      is_training = False,
-      input_ids = features["input_ids"],
-      input_mask= features["input_mask"],
-      token_type_ids=features["segment_ids"],
-      use_one_hot_embeddings= False
-    )
-    tf.logging.info("Complete Bert model build")
+    parse_result(result, all_tokens, features)
 
   else:
     raise ValueError("The 'mode' flag must be one of train/eval/decode")
